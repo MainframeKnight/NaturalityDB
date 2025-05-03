@@ -1,5 +1,5 @@
 use std::{collections::HashMap, fs};
-use crate::tree::{Attr, AttrFlag, DBState, Expr, ExprTree, Lambda, SpType, Type};
+use crate::tree::{read_ident, Attr, AttrFlag, DBState, ExprTree, Lambda, SpType, Type};
 
 fn binary_read_string(b: &[u8], index: &mut usize) -> Option<String> {
     let mut i = *index;
@@ -42,11 +42,21 @@ fn binary_read_expr(b: &[u8], index: &mut usize) -> Option<ExprTree> {
                 res_vec.push(Box::new(binary_read_expr(b, index)?));
             }
             *index += 1;
-            Some(if is_array {ExprTree::ArrayLit(res_vec)} else {ExprTree::TupleLit(res_vec)})
+            if is_array {
+                if res_vec.len() == 0 {
+                    Some(ExprTree::ArrayLit(res_vec, match binary_read_type(b, index)? {
+                        SpType::Reg(r) => Some(r),
+                        _ => return None
+                    }))
+                } else { Some(ExprTree::ArrayLit(res_vec, None)) }
+            } else { Some(ExprTree::TupleLit(res_vec)) }
         }, 6 => {
             let e = binary_read_expr(b, index)?;
             Some(ExprTree::JustLit(Box::new(e)))
-        }, 7 => { Some(ExprTree::NothingLit) },
+        }, 7 => { Some(ExprTree::NothingLit(match binary_read_type(b, index)? {
+            SpType::Reg(r) => r,
+            _ => return None
+        })) },
         9 => {
             let e = binary_read_string(b, index)?;
             Some(ExprTree::Ident(e))
@@ -89,12 +99,29 @@ fn binary_read_expr(b: &[u8], index: &mut usize) -> Option<ExprTree> {
             let (p1, p2, p3) = (Box::new(binary_read_expr(b, index)?)
                 , Box::new(binary_read_expr(b, index)?), Box::new(binary_read_expr(b, index)?));
             Some(ExprTree::IfExpr(p1, p2, p3))
-        },
+        }, 21 => {
+            Some(ExprTree::LambdaExpr(Box::new(binary_parse_lambda(b, index)?)))
+        }, 22 => {
+            let ent = u64::from_le_bytes(b.get(*index..*index + 8)?.try_into().ok()?);
+            *index += 8;
+            let pos = u64::from_le_bytes(b.get(*index..*index + 8)?.try_into().ok()?);
+            *index += 8;
+            Some(ExprTree::Ref(String::new(), String::new(), Box::new(ExprTree::TupleLit(vec![])), ent, pos))
+        }, 23 => {
+            let ent = binary_read_string(b, index)?;
+            let lm = binary_parse_lambda(b, index)?;
+            Some(ExprTree::For(ent, Box::new(lm)))
+        }
         _ => None
     }
 }
 fn binary_write_expr(t: &ExprTree) -> Vec<u8> {
     match t {
+        ExprTree::For(ent, lm) => {
+            let mut res = vec![23];
+            res.append(&mut binary_write_string(ent));
+            res.append(&mut binary_write_lambda(lm));
+            res},
         ExprTree::IntLit(v) => {
             let mut res = vec![1];
             res.append(&mut v.to_le_bytes().to_vec());
@@ -109,10 +136,13 @@ fn binary_write_expr(t: &ExprTree) -> Vec<u8> {
             let mut res = vec![4];
             res.append(&mut d.to_le_bytes().to_vec());
             res},
-        ExprTree::ArrayLit(v) => {
+        ExprTree::ArrayLit(v, opt_type) => {
             let mut res = vec![5];
             res.append(&mut v.iter().map(|x| binary_write_expr(x.as_ref())).flatten().collect());
             res.push(0);
+            if res.len() == 1 {
+                res.append(&mut binary_write_type(&SpType::Reg(opt_type.clone().expect("empty array literal with no type"))));
+            }
             res},
         ExprTree::TupleLit(v) => {
             let mut res = vec![8];
@@ -123,7 +153,9 @@ fn binary_write_expr(t: &ExprTree) -> Vec<u8> {
             let mut res = vec![6];
             res.append(&mut binary_write_expr(v));
             res},
-        ExprTree::NothingLit => vec![7],
+        ExprTree::NothingLit(t) => {
+            [vec![7], binary_write_type(&SpType::Reg(t.clone()))].concat()
+        }
         ExprTree::Ident(s) => {
             let mut res = vec![9];
             res.append(&mut binary_write_string(s));
@@ -185,6 +217,12 @@ fn binary_write_expr(t: &ExprTree) -> Vec<u8> {
             res.append(&mut binary_write_expr(c2));
             res.append(&mut binary_write_expr(c3));
             res},
+        ExprTree::LambdaExpr(lm) => {
+            let mut res = vec![21];
+            res.append(&mut binary_write_lambda(lm));
+            res},
+        ExprTree::Ref(_, _, _, ent, pos) => {
+            [vec![22], ent.to_le_bytes().to_vec(), pos.to_le_bytes().to_vec()].concat()}
     }
 }
 
@@ -220,7 +258,7 @@ fn binary_read_type(b: &[u8], index: &mut usize) -> Option<SpType> {
                 SpType::Reg(t) => t,
                 _ => return None
             };
-            Some(if is_array {SpType::Reg(Type::Array(Some(Box::new(v))))}
+            Some(if is_array {SpType::Reg(Type::Array(Box::new(v)))}
                 else {SpType::Reg(Type::Maybe(Box::new(v)))})
         }, 11 | 12 => {
             let is_gen = *b.get(*index - 1)? == 11;
@@ -229,7 +267,11 @@ fn binary_read_type(b: &[u8], index: &mut usize) -> Option<SpType> {
                 _ => return None
             });
             let l = binary_parse_lambda(b, index)?;
-            Some(if is_gen {SpType::Gen(v, l)} else {SpType::Restrict(v, l)})
+            if is_gen {
+                let counter = u64::from_le_bytes(b.get(*index..*index + 8)?.try_into().ok()?);
+                *index += 8;
+                Some(SpType::Gen(v, l, counter))
+            } else {Some(SpType::Restrict(v, l))}
         }, _ => None
     }
 }
@@ -260,19 +302,17 @@ fn binary_write_type(t: &SpType) -> Vec<u8> {
             res},
         SpType::Reg(Type::Array(v0)) => {
             let mut res = vec![7];
-            match v0 {
-                Some(v) => res.append(&mut binary_write_type(&SpType::Reg(*v.clone()))),
-                None => {}
-            }
+            res.append(&mut binary_write_type(&SpType::Reg(*v0.clone())));
             res},
         SpType::Reg(Type::Maybe(v)) => {
             let mut res = vec![8];
             res.append(&mut binary_write_type(&SpType::Reg(*v.clone())));
             res},
-        SpType::Gen(t, l) => {
+        SpType::Gen(t, l, cnt) => {
             let mut res = vec![11];
             res.append(&mut binary_write_type(&SpType::Reg(*t.clone())));
             res.append(&mut binary_write_lambda(l));
+            res.append(&mut cnt.to_le_bytes().to_vec());
             res},
         SpType::Restrict(t, l) =>  {
             let mut res = vec![12];
@@ -292,7 +332,7 @@ fn binary_parse_lambda(b: &[u8], index: &mut usize) -> Option<Lambda> {
     }
     *index += 1;
     let expr = binary_read_expr(b, index)?;
-    Some(Lambda { params: res_vec, code: Expr { tree: expr, exprType: None } })
+    Some(Lambda { params: res_vec, code: expr })
 }
 fn binary_write_lambda(l: &Lambda) -> Vec<u8> {
     let mut res = vec![];
@@ -301,7 +341,7 @@ fn binary_write_lambda(l: &Lambda) -> Vec<u8> {
         res.append(&mut binary_write_type(&SpType::Reg(i.1.clone())));
     }
     res.push(0);
-    res.append(&mut binary_write_expr(&l.code.tree));
+    res.append(&mut binary_write_expr(&l.code));
     res
 }
 
@@ -318,7 +358,7 @@ fn binary_parse_attr(b: &[u8], index: &mut usize) -> Option<Attr> {
         Some(0) => AttrFlag::None,
         Some(1) => AttrFlag::Computable,
         Some(2) => AttrFlag::Global,
-        Some(3) => AttrFlag::Primary,
+        Some(3) => AttrFlag::Unique,
         _ => return None
     };
     *index += 1;
@@ -338,14 +378,17 @@ fn binary_write_attr(a: &Attr) -> Vec<u8> {
         AttrFlag::None => 0,
         AttrFlag::Computable => 1,
         AttrFlag::Global => 2,
-        AttrFlag::Primary => 3
+        AttrFlag::Unique => 3
     });
     res
 }
 
 impl DBState {
+    pub fn new() -> DBState {
+        DBState { header: vec![], data: HashMap::new(), ref_list: HashMap::new() }
+    }
     pub fn from_file(filename: &str) -> Option<Self> {
-        let mut res = DBState { header: vec![], data: HashMap::new() };
+        let mut res = DBState { header: vec![], data: HashMap::new(), ref_list: HashMap::new() };
         let bytestream = std::fs::read(filename).ok()?;
         let mut file_pos: usize = 0;
         while *bytestream.get(file_pos)? != 0 {
@@ -358,18 +401,32 @@ impl DBState {
             res.header.push((ent_name, attr_vec));
         }
         file_pos += 1;
-        while bytestream.get(file_pos) != None {
+        let data_size = u64::from_le_bytes(bytestream.get(file_pos..file_pos + 8)?.try_into().ok()?);
+        file_pos += 8;
+        for _ in 0..data_size {
             let c1 = u64::from_le_bytes(bytestream.get(file_pos..file_pos + 8)?.try_into().ok()?);
             file_pos += 8;
             let c2 = u64::from_le_bytes(bytestream.get(file_pos..file_pos + 8)?.try_into().ok()?);
             file_pos += 8;
+            let expr_size = u64::from_le_bytes(bytestream.get(file_pos..file_pos + 8)?.try_into().ok()?);
+            file_pos += 8;
             let mut expr_vec = vec![];
-            while *bytestream.get(file_pos)? != 0 {
-                expr_vec.push(Expr {tree: binary_read_expr(&bytestream, &mut file_pos)?, exprType: None });
+            for _ in 0..expr_size {
+                expr_vec.push(binary_read_expr(&bytestream, &mut file_pos)?);
             }
-            file_pos += 1;
             if res.data.contains_key(&(c1, c2)) { return None; }
             res.data.insert((c1, c2), expr_vec);
+        }
+        let ref_size = u64::from_le_bytes(bytestream.get(file_pos..file_pos + 8)?.try_into().ok()?);
+        file_pos += 8;
+        for _ in 0..ref_size {
+            let c1 = u64::from_le_bytes(bytestream.get(file_pos..file_pos + 8)?.try_into().ok()?);
+            file_pos += 8;
+            let c2 = u64::from_le_bytes(bytestream.get(file_pos..file_pos + 8)?.try_into().ok()?);
+            file_pos += 8;
+            let cnt = u64::from_le_bytes(bytestream.get(file_pos..file_pos + 8)?.try_into().ok()?);
+            file_pos += 8;
+            res.ref_list.insert((c1, c2), cnt);
         }
         Some(res)
     }
@@ -383,13 +440,20 @@ impl DBState {
             res.push(0);
         }
         res.push(0);
+        res.append(&mut (self.data.len() as u64).to_le_bytes().to_vec());
         for i in &self.data {
             res.append(&mut u64::to_le_bytes(i.0.0).to_vec());
             res.append(&mut u64::to_le_bytes(i.0.1).to_vec());
+            res.append(&mut i.1.len().to_le_bytes().to_vec());
             for j in i.1 {
-                res.append(&mut binary_write_expr(&j.tree));
+                res.append(&mut binary_write_expr(&j));
             }
-            res.push(0);
+        }
+        res.append(&mut (self.ref_list.len() as u64).to_le_bytes().to_vec());
+        for ((v1, v2), cnt) in self.ref_list.iter().by_ref() {
+            res.append(&mut u64::to_le_bytes(*v1).to_vec());
+            res.append(&mut u64::to_le_bytes(*v2).to_vec());
+            res.append(&mut u64::to_le_bytes(*cnt).to_vec());
         }
         fs::write(filename, res)?;
         Ok(())

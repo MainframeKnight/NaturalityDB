@@ -1,4 +1,4 @@
-use crate::tree::{self, Expr, ExprTree};
+use crate::tree::{self, ExprTree};
 
 fn bracket_searcher(open_br: &str, close_br: &str, code: &Vec<(String, u64, u64)>, index: &mut u32,
     end_ln: u64, end_col: u64) -> Result<Vec<(String, u64, u64)>, String> {
@@ -30,7 +30,6 @@ fn grammar_expect(tok: &str, code: &Vec<(String, u64, u64)>, index: &mut u32, en
     Err(format!["Expected '{}', found '{}' at ({}, {}).", tok, lx, ln, cl])
 }
 fn parse_lit(code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_cl: u64) -> Result<ExprTree, String> {
-    println!("parselit called with {:?} and {}", code, index);
     if *index >= code.len() as u32 { 
         return Err(format!["Expected literal or identifier at ({}, {})", end_ln, end_cl]);
     }
@@ -53,16 +52,28 @@ fn parse_lit(code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_c
         for i in &lx.chars().collect::<Vec<_>>()[1..lx.chars().count() - 1] {
             res.push(Box::new(ExprTree::CharLit(*i)));
         }
-        return Ok(ExprTree::ArrayLit(res))
+        return Ok(ExprTree::ArrayLit(res, Some(tree::Type::Char)))
     }
     if lx == "true" { return Ok(ExprTree::BoolLit(true)); }
     if lx == "false" { return Ok(ExprTree::BoolLit(false)); }
-    if lx == "Nothing" { return Ok(ExprTree::NothingLit); }
+    if lx == "Nothing" { 
+        grammar_expect(":", code, index, end_ln, end_cl)?;
+        if *index >= code.len() as u32 { 
+            return Err(format!["Expected type at ({}, {})", end_ln, end_cl]);
+        }
+        let (_, ln, cl) = &code[*index as usize];
+        let mut type_toks = tree::TokenList { tokens: code, index: *index as u64 };
+        let t = match tree::SpType::parse_type(&mut type_toks)? {
+            tree::SpType::Reg(r) => r,
+            _ => return Err(format!["Special type not allowed at ({}, {})", ln, cl])
+        };
+        *index += type_toks.index as u32;
+        return Ok(ExprTree::NothingLit(t)); 
+    }
     if lx == "Just" {
         grammar_expect("(", code, index, end_ln, end_cl)?;
         let inner_vec = bracket_searcher("(", ")", code, index, end_ln, end_cl)?;
-        let mut val = 0;
-        let res = grammar_parser("E1", &inner_vec, &mut val, end_ln, end_cl)?;
+        let res = grammar_parser("E1", &inner_vec, &mut 0, end_ln, end_cl)?;
         grammar_expect(")", code, index, end_ln, end_cl)?;
         return Ok(ExprTree::JustLit(Box::new(res)));
     }
@@ -89,7 +100,6 @@ fn parse_lit(code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_c
             if *index >= code.len() as u32 { 
                 return Err(format!["Expected '{}' or ',' in {} literal at ({}, {}).",
                 if is_array {"]"} else {")"}, if is_array {"array"} else {"tuple"}, end_ln, end_cl]); }
-            println!("inner_vec = {:?}, iterated = {}, cur = {}", inner_vec, iterated, code[*index as usize].0);
             if inner_vec.len() == 0 && !iterated &&
                  (code[*index as usize].0 == ")" && !is_array || code[*index as usize].0 == "]" && is_array) { *index += 1; break; }
             let cur = &code[*index as usize];
@@ -99,12 +109,64 @@ fn parse_lit(code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_c
             arg_vec.push(Box::new(res));
             if cur.0 == ")" && !is_array || cur.0 == "]" && is_array { break; }
         }
-        return if is_array {Ok(ExprTree::ArrayLit(arg_vec))} else {Ok(ExprTree::TupleLit(arg_vec))}
+        if is_array {
+            if arg_vec.len() == 0 {
+                grammar_expect(":", code, index, end_ln, end_cl)?;
+                if *index >= code.len() as u32 { 
+                    return Err(format!["Expected type at ({}, {})", end_ln, end_cl]);
+                }
+                let (_, ln, cl) = &code[*index as usize];
+                let mut type_toks = tree::TokenList { tokens: code, index: *index as u64 };
+                let t = match tree::SpType::parse_type(&mut type_toks)? {
+                    tree::SpType::Reg(r) => r,
+                    _ => return Err(format!["Special type not allowed at ({}, {})", ln, cl])
+                };
+                *index += type_toks.index as u32;
+                return Ok(ExprTree::ArrayLit(vec![], Some(t)));
+            }
+            return Ok(ExprTree::ArrayLit(arg_vec, None));
+        }
+        return Ok(ExprTree::TupleLit(arg_vec));
+    }
+    if lx == "for" {
+        grammar_expect("(", code, index, end_ln, end_cl)?;
+        let (lx2, ln, cl) = &code[*index as usize];
+        if let Some(c) = lx2.chars().nth(0) {
+            if !c.is_alphabetic() {
+                return Err(format!["Expected identifier at ({}, {}), found '{}'.", ln, cl, lx2]);
+            }
+        }
+        *index += 1;
+        grammar_expect(")", code, index, end_ln, end_cl)?;
+        let mut type_toks = tree::TokenList { tokens: code, index: *index as u64 };
+        let t = tree::Lambda::parse_lambda(&mut type_toks)?;
+        *index = type_toks.index as u32;
+        return Ok(ExprTree::For(lx2.clone(), Box::new(t)));
     }
     if let Some(c) = lx.chars().nth(0) {
         if c.is_alphabetic() {
             return Ok(ExprTree::Ident(lx.to_string()));
         }
+    }
+    if lx == "#" {
+        grammar_expect("(", code, index, end_ln, end_cl)?;
+        let (lx2, ln2, cl2) = &code[*index as usize];
+        let id1 = match lx2.chars().nth(0) {
+            Some(c) if c.is_alphabetic() => lx,
+            _ => return Err(format!["Expected identifier, found '{}' in reference at ({}, {}).", lx2, ln2, cl2])
+        };
+        *index += 1;
+        grammar_expect(",", code, index, end_ln, end_cl)?;
+        let (lx2, ln2, cl2) = &code[*index as usize];
+        let id2 = match lx2.chars().nth(0) {
+            Some(c) if c.is_alphabetic() => lx,
+            _ => return Err(format!["Expected identifier, found '{}' in reference at ({}, {}).", lx2, ln2, cl2])
+        };
+        *index += 1;
+        grammar_expect(",", code, index, end_ln, end_cl)?;
+        let res = grammar_parser("E1", code, index, end_ln, end_cl)?;
+        grammar_expect(")", code, index, end_ln, end_cl)?;
+        return Ok(ExprTree::Ref(id1.clone(), id2.clone(), Box::new(res), 0, 0));
     }
     *index -= 1;
     Err(format!["Expected identifier or literal, found '{}' at ({}, {}).", lx, ln, cl])
@@ -112,7 +174,6 @@ fn parse_lit(code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_c
 
 fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_cl: u64)
     -> Result<ExprTree, String> {
-    println!("index: {}, nonterm: {}", index, nonterm);
     match nonterm {
         "E1" => {
             let val1 = grammar_parser("E2", code, index, end_ln, end_cl)?;
@@ -144,9 +205,7 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
                     }
                     let val2 = grammar_parser("E3", code, index, end_ln, end_cl)?;
                     return Ok(ExprTree::Cmp(is_greater, is_eq, Box::new(val1), Box::new(val2)));
-                }, Some((tok, ln, cl)) => Err(format!["Unexpected token '{}' in expression at ({}, {})",
-                    tok, ln, cl]),
-                None => Ok(val1)
+                }, _ => Ok(val1)
             }
         }, "E3" => {
             let mut res = grammar_parser("E4", code, index, end_ln, end_cl)?;
@@ -200,6 +259,12 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
                     let v = grammar_parser("E1", &inner_vec, &mut 0, end_ln, end_cl)?;
                     grammar_expect(")", code, index, end_ln, end_cl)?;
                     v
+                }, Some((a, _, _)) if a == "lambda" => {
+                    *index += 1;
+                    let mut type_toks = tree::TokenList { tokens: code, index: *index as u64 };
+                    let t = tree::Lambda::parse_lambda(&mut type_toks)?;
+                    *index += type_toks.index as u32;
+                    ExprTree::LambdaExpr(Box::new(t))
                 }, Some(_) | None => parse_lit(code, index, end_ln, end_cl)?
             };
             while let Some((a, _, _)) = code.iter().nth(*index as usize) {
@@ -250,12 +315,11 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
     }
 }
 
-impl Expr {
-    pub fn new(code: Vec<(String, u64, u64)>, end_ln: u64, end_col: u64) -> Result<Expr, String> {
+impl ExprTree {
+    pub fn new(code: Vec<(String, u64, u64)>, end_ln: u64, end_col: u64) -> Result<ExprTree, String> {
         if code.len() == 0 {Err(format!["Expected expression at ({}, {}).", end_ln, end_col]) }
         else {
-            Ok(Expr { tree: grammar_parser("E1", &code, &mut 0, end_ln, end_col)?,
-            exprType: None})
+            Ok(grammar_parser("E1", &code, &mut 0, end_ln, end_col)?)
         }
     }
 }

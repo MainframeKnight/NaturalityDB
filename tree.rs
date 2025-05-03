@@ -1,19 +1,16 @@
 use std::collections::HashMap;
 
-#[derive(Debug)]
-pub struct Expr{
-    pub tree: ExprTree,
-    pub exprType: Option<Box<Type>>
-}
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprTree {
+    Ref(String, String, Box<ExprTree>, u64, u64),
+    For(String, Box<Lambda>),
     IntLit(i64),
     CharLit(char),
     BoolLit(bool),
     DoubleLit(f64),
-    ArrayLit(Vec<Box<ExprTree>>),
+    ArrayLit(Vec<Box<ExprTree>>, Option<Type>),
     JustLit(Box<ExprTree>),
-    NothingLit,
+    NothingLit(Type),
     TupleLit(Vec<Box<ExprTree>>),
     Ident(String),
     Plus(Box<ExprTree>, Box<ExprTree>),
@@ -26,13 +23,14 @@ pub enum ExprTree {
     Call(Box<ExprTree>, Vec<Box<ExprTree>>),
     Eq(bool, Box<ExprTree>, Box<ExprTree>), // The first arg is true, when == and false when !=
     Cmp(bool, bool, Box<ExprTree>, Box<ExprTree>), // 1st arg: true -> ">", false -> "<", 2nd arg: true -> nonstrict, false -> strict.
-    IfExpr(Box<ExprTree>, Box<ExprTree>, Box<ExprTree>)
+    IfExpr(Box<ExprTree>, Box<ExprTree>, Box<ExprTree>),
+    LambdaExpr(Box<Lambda>)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Lambda {
     pub params: Vec<(String, Type)>,
-    pub code: Expr
+    pub code: ExprTree
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -43,25 +41,25 @@ pub enum Type {
     Bool,
     Double,
     FuncType(Vec<Box<Type>>),
-    Array(Option<Box<Type>>),
+    Array(Box<Type>),
     Maybe(Box<Type>),
     Tuple(Vec<Box<Type>>),
     Sum(Vec<Box<Type>>)
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SpType {
     Reg(Type),
-    Gen(Box<Type>, Lambda),
+    Gen(Box<Type>, Lambda, u64),
     Restrict(Box<Type>, Lambda)
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AttrFlag {
     Computable,
     Global,
-    Primary,
+    Unique,
     None
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Attr {
     pub name: String,
     pub attrType: SpType,
@@ -82,11 +80,12 @@ pub enum ReshapeOptions {
 #[derive(Debug)]
 pub enum Command {
     Open(String),
+    Commit(String),
     NewEntity(String, Vec<Attr>),
-    Eval(Expr),
-    Add(String, Vec<(String, Vec<Expr>)>),
+    Eval(ExprTree),
+    Add(String, Vec<(String, Vec<ExprTree>)>),
     Delete(String, Lambda),
-    Trans(String, Lambda),
+    Trans(String, Lambda, Vec<(String, Lambda)>),
     Reshape(String, Vec<ReshapeOptions>, Option<String>),
     Project(String, Vec<String>, String),
     Join(Vec<String>, Lambda, String),
@@ -96,7 +95,8 @@ pub enum Command {
 #[derive(Debug)]
 pub struct DBState {
     pub header: Vec<(String, Vec<Attr>)>,
-    pub data: HashMap<(u64, u64), Vec<Expr>>
+    pub data: HashMap<(u64, u64), Vec<ExprTree>>,
+    pub ref_list: HashMap<(u64, u64), u64>
 }
 
 pub fn escapes(c: &char) -> Option<char> {
@@ -107,11 +107,41 @@ pub fn escapes(c: &char) -> Option<char> {
         _ => None
     }
 }
+
+pub trait LexerIterator: Iterator<Item = (String, u64, u64)> {
+    fn lookahead(&mut self) -> Option<String>;
+    fn coords(&self) -> (u64, u64);
+}
+
+pub struct TokenList<'a> {
+    pub tokens: &'a Vec<(String, u64, u64)>,
+    pub index: u64
+}
+impl Iterator for TokenList<'_> {
+    type Item = (String, u64, u64);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.tokens.get(self.index as usize) {
+            Some(res) => {
+                self.index += 1;
+                Some(res.clone())
+            }, None => None
+        }
+    }
+}
+impl LexerIterator for TokenList<'_> {
+    fn coords(&self) -> (u64, u64) {
+        (self.tokens[self.index as usize].1, self.tokens[self.index as usize].2)
+    }
+    fn lookahead(&mut self) -> Option<String> {
+        self.tokens.get(self.index as usize).map(|x| x.0.clone())
+    }
+}
+
 pub struct Lexer {
     input: String,
-    index: usize,
-    col: u64,
-    line: u64,
+    pub index: usize,
+    pub col: u64,
+    pub line: u64,
     errors: Vec<String>
 }
 impl Iterator for Lexer {
@@ -276,6 +306,8 @@ impl Lexer {
             if isCom {
                 if s.chars().nth(i) == Some('@') && s.chars().nth(i - 1) != Some('\\') {
                     isCom = false;
+                } else if s.chars().nth(i) == Some('\n') {
+                    str.push(s.chars().nth(i).unwrap());
                 }
             } else if s.chars().nth(i) == Some('@') {
                 isCom = true;
@@ -295,8 +327,16 @@ impl Lexer {
         return res.map(|x| x.0);
     }
 }
+impl LexerIterator for Lexer {
+    fn lookahead(&mut self) -> Option<String> {
+        self.lookahead()
+    }
+    fn coords(&self) -> (u64, u64) {
+        self.coords()
+    }
+}
 
-pub fn expect(input: &mut Lexer, tok: Vec<&str>) -> Result<(), String> {
+pub fn expect<T: LexerIterator>(input: &mut T, tok: Vec<&str>) -> Result<(), String> {
     for i in tok {
         match input.next() {
             Some((lexeme, line, col)) => if i == lexeme {} else {
@@ -307,7 +347,7 @@ pub fn expect(input: &mut Lexer, tok: Vec<&str>) -> Result<(), String> {
     } Ok(())
 }
 
-pub fn find_bracket(input: &mut Lexer, close_br: &str, open_br: &str) -> Result<(Vec<(String, u64, u64)>, u64, u64), String> {
+pub fn find_bracket<T: LexerIterator>(input: &mut T, close_br: &str, open_br: &str) -> Result<(Vec<(String, u64, u64)>, u64, u64), String> {
     let mut res = vec![];
     let mut cnt = 1;
     while let Some((lexeme, line, col)) = input.next() {
@@ -324,18 +364,7 @@ pub fn find_bracket(input: &mut Lexer, close_br: &str, open_br: &str) -> Result<
     Err(format!("Expected '{}', found EOF.", close_br))
 }
 
-pub fn find(input: &mut Lexer, tok: &str) -> Result<Vec<(String, u64, u64)>, String> {
-    let mut res = vec![];
-    while let Some((lexeme, line, col)) = input.next() {
-        if lexeme == tok {
-            return Ok(res);
-        }
-        res.push((lexeme, line, col));
-    }
-    Err(format!("Expected '{}', found EOF.", tok))
-}
-
-pub fn read_ident(input: &mut Lexer) -> Result<String, String> {
+pub fn read_ident<T: LexerIterator>(input: &mut T) -> Result<String, String> {
     match input.next() {
         Some((lexeme, line, col)) => {
             if let Some(a) = lexeme.chars().nth(0) {

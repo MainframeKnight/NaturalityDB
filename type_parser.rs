@@ -1,7 +1,7 @@
-use crate::tree::{self, expect, read_ident, Lexer, SpType};
+use crate::tree::{self, expect, read_ident, LexerIterator, SpType};
 
 impl tree::Lambda {
-    pub fn parse_lambda(input: &mut Lexer) -> Result<tree::Lambda, String> {
+    pub fn parse_lambda<T: LexerIterator>(input: &mut T) -> Result<tree::Lambda, String> {
         expect(input, vec!["("])?;
         let mut paramvec: Vec<(String, tree::Type)> = vec![];
         let id = read_ident(input)?;
@@ -24,11 +24,11 @@ impl tree::Lambda {
         expect(input, vec![")", "-", ">", "{"])?;
         let (val, br1, br2) = tree::find_bracket(input, "}", "{")?;
         return Ok(tree::Lambda{ params: paramvec, code: 
-            tree::Expr::new(val, br1, br2)?});
+            tree::ExprTree::new(val, br1, br2)?});
     }
 }
 impl tree::SpType {
-    pub fn parse_type(input: &mut Lexer) -> Result<tree::SpType, String> {
+    pub fn parse_type<T: LexerIterator>(input: &mut T) -> Result<tree::SpType, String> {
         let primtypes: Vec<&str> = vec!["Int", "Char", "Bool", "Double"];
         let mut types: Vec<tree::Type> = vec![tree::Type::Int, 
             tree::Type::Char, tree::Type::Bool, tree::Type::Double];
@@ -67,7 +67,7 @@ impl tree::SpType {
             match SpType::parse_type(input)? {
                 SpType::Reg(t) => {
                     expect(input, vec!["]"])?;
-                    return Ok(SpType::Reg(tree::Type::Array(Some(Box::new(t)))));
+                    return Ok(SpType::Reg(tree::Type::Array(Box::new(t))));
                 }, _ => return Err(format!["Special type not allowed at ({}, {}).", ln, cl])
             }
         } else if lexeme == "Maybe" {
@@ -88,7 +88,7 @@ impl tree::SpType {
             expect(input, vec![")"])?;
             return match res {
                 SpType::Reg(t) => {
-                    Ok(SpType::Gen(Box::new(t), lm))
+                    Ok(SpType::Gen(Box::new(t), lm, 0))
                 }, _ => Err(format!["Special type not allowed at ({}, {}).", ln, cl])
             };
         } else if lexeme == "Restrict" {
@@ -104,6 +104,7 @@ impl tree::SpType {
                 }, _ => Err(format!["Special type not allowed at ({}, {}).", ln, cl])
             };
         } else if lexeme == "Object" {
+            expect(input, vec!["("])?;
             let s = read_ident(input)?;
             expect(input, vec![")"])?;
             return Ok(SpType::Reg(tree::Type::Object(s)));
@@ -112,7 +113,7 @@ impl tree::SpType {
     }
 }
 impl tree::Type {
-    fn parse_vectype(input: &mut Lexer) -> Result<Vec<Box<tree::Type>>, String> {
+    fn parse_vectype<T: LexerIterator>(input: &mut T) -> Result<Vec<Box<tree::Type>>, String> {
         let mut args: Vec<Box<tree::Type>> = Vec::new();
         args.push(Box::new(Self::parse(input)?));
         loop {
@@ -128,7 +129,7 @@ impl tree::Type {
         expect(input, vec![")"])?;
         Ok(args)
     }
-    fn parse(input: &mut Lexer) -> Result<tree::Type, String> {
+    fn parse<T: LexerIterator>(input: &mut T) -> Result<tree::Type, String> {
         let (ln, cl) = input.coords();
         match SpType::parse_type(input)? {
             SpType::Reg(t) => Ok(t),
