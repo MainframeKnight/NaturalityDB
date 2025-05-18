@@ -226,7 +226,8 @@ impl tree::Command {
                                     let target_type = match &db.header[pos].1[a].attrType {
                                         tree::SpType::Reg(t) => t.clone(),
                                         tree::SpType::Restrict(t, _) => *t.clone(),
-                                        tree::SpType::Gen(t, _, _) => *t.clone()
+                                        tree::SpType::Gen(_, _, _) => return Err(format!["Attribute '{}' of entity
+                                            '{}' has a Gen type and is not mutable.", s, ent])
                                     };
                                     if lm.get_type(&db, &HashMap::new())? != Type::FuncType(vec![
                                         Box::new(Type::Object(ent.clone())), Box::new(target_type)
@@ -253,15 +254,21 @@ impl tree::Command {
                                                 }
                                             }
                                         }
+                                        if let tree::SpType::Restrict(_, pr) = &db.header[pos].1[attr_pos].attrType {
+                                            match compute(&ExprTree::Call(Box::new(ExprTree::LambdaExpr(Box::new(pr.clone()))), vec![
+                                                Box::new(ExprTree::Ref(String::new(), String::new(), Box::new(ExprTree::TupleLit(vec![])), pos as u64, i as u64))])
+                                                , &db, &HashMap::new())? {
+                                                ExprTree::BoolLit(true) => {},
+                                                _ => return Err(format!["Unable to transform attribute '{}' of entity '{}'
+                                                    as the new value doesn't satisfy Restrict type predicate.", name, ent])
+                                            }
+                                        }
                                         for k in find_refs(&db.data[&(pos as u64, attr_pos as u64)][i]) {
                                             if db.ref_list[&k] == 1 {
                                                 db.ref_list.remove(&k);
                                             } else {
                                                 *db.ref_list.get_mut(&k).unwrap() -= 1;
                                             }
-                                        }
-                                        if db.ref_list.contains_key(&(pos as u64, i as u64)) {
-                                            return Err(format!["Unable to drop '{}' as it is bound by reference constraint.", ent]);
                                         }
                                         db.data.get_mut(&(pos as u64, attr_pos as u64)).unwrap()[i] = new_val.clone();
                                         for rf in find_refs(&new_val) {
@@ -284,6 +291,10 @@ impl tree::Command {
                     format!["Unable to reshape a non-recognized entity '{}'.", ent])?;
                 let target = match new_ent {
                     Some(name) => {
+                        if let Some(_) = db.header[cur_ent].1.iter().find(|x| x.name == *name) {
+                            return Err(format!["Unable to reshape into a new entity '{}' as there already exists an entity
+                                with this name.", name]);
+                        }
                         db.header.push((name.clone(), db.header[cur_ent].1.clone()));
                         let mut temp_cont = vec![];
                         for ((_, k), v) in db.data.iter().filter(|(x,_)| x.0 == cur_ent as u64) {
@@ -308,10 +319,11 @@ impl tree::Command {
                                     , atr.name, ent]);
                             }
                             let lm_type = atr.default.as_mut().unwrap().get_type(&db, &HashMap::new())?;
+                            let mut restrict_lm = None;
                             let needed_type = tree::Type::FuncType(vec![Box::new(tree::Type::Object(ent.clone())),
                                 Box::new(match &atr.attrType {
                                     tree::SpType::Reg(t) => t.clone(),
-                                    tree::SpType::Restrict(t, _) => *t.clone(),
+                                    tree::SpType::Restrict(t, lm) => {restrict_lm = Some(lm.clone()); *t.clone()},
                                     tree::SpType::Gen(t, _, _) => *t.clone()
                             })]);
                             if lm_type != needed_type {
@@ -319,11 +331,28 @@ impl tree::Command {
                                     its type '{:?}'", atr.name, ent, needed_type]);
                             }
                             db.header[target].1.push(atr.clone());
-                            let mut newvals = vec![];
+                            let mut newvals: Vec<ExprTree> = vec![];
                             if let Some(a) = db.data.get(&(target as u64, 0)) {
                                 for i in 0..a.len() {
-                                    newvals.push(compute(&ExprTree::Call(Box::new(ExprTree::LambdaExpr(Box::new(atr.default.clone().unwrap()))), 
-                                        vec![Box::new(ExprTree::Ref(String::new(), String::new(), Box::new(ExprTree::TupleLit(vec![])), target as u64, i as u64))]),&db, &HashMap::new())?);
+                                    let new_value = compute(&ExprTree::Call(Box::new(ExprTree::LambdaExpr(Box::new(atr.default.clone().unwrap()))), 
+                                        vec![Box::new(ExprTree::Ref(String::new(), String::new(), Box::new(ExprTree::TupleLit(vec![])), target as u64, i as u64))]),&db, &HashMap::new())?;
+                                    if let Some(ref lm) = restrict_lm {
+                                        if let ExprTree::BoolLit(true) = compute(&ExprTree::Call(Box::new(ExprTree::LambdaExpr(Box::new(lm.clone()))),
+                                            vec![Box::new(new_value.clone())]), &db, &HashMap::new())? {} else {
+                                                return Err(format!["Unable to add default values of new attribute '{}' of entity '{}' because they invalidate restriction
+                                                    of its type Restrict(...).", atr.name, ent]);
+                                            }
+                                    }
+                                    if atr.flag == tree::AttrFlag::Unique {
+                                        for prev in &newvals {
+                                            if let ExprTree::BoolLit(true) = compute(&ExprTree::Eq(true, Box::new(prev.clone()), 
+                                                Box::new(new_value.clone())), &db, &HashMap::new())? {
+                                                return Err(format!["Unable to add default values of new attribute '{}' of entity '{}' because
+                                                    they invalidate attribute's uniqueness.", atr.name, ent]);
+                                            }
+                                        }
+                                    }
+                                    newvals.push(new_value);
                                 }
                             }
                             for i in newvals {

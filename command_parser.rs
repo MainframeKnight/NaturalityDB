@@ -7,12 +7,12 @@ fn parse_attrlist(input: &mut Lexer) -> Result<Vec<tree::ExprTree>, String> {
     let mut arg_vec = vec![];
     let mut closed = false;
     while let Some((lx, ln, cl)) = input.next() {
-        if lx == "," {
+        if lx == ";" {
             res.push(tree::ExprTree::new(arg_vec, ln, cl)?);
             arg_vec = vec![];
             continue;
         }
-        else if lx == ";" {
+        else if lx == "$" {
             res.push(tree::ExprTree::new(arg_vec, ln, cl)?);
             closed = true;
             break; 

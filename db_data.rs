@@ -1,5 +1,5 @@
 use std::{collections::HashMap, fs};
-use crate::tree::{read_ident, Attr, AttrFlag, DBState, ExprTree, Lambda, SpType, Type};
+use crate::tree::{Attr, AttrFlag, DBState, ExprTree, Lambda, SpType, Type};
 
 fn binary_read_string(b: &[u8], index: &mut usize) -> Option<String> {
     let mut i = *index;

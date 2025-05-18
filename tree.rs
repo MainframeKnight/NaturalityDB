@@ -104,6 +104,7 @@ pub fn escapes(c: &char) -> Option<char> {
         'n' => Some('\n'),
         '\\' => Some('\\'),
         '\"' => Some('\"'),
+        '@' => Some('@'),
         _ => None
     }
 }
@@ -205,9 +206,9 @@ impl Iterator for Lexer {
                 self.col += 1;
                 self.index += 1;
                 loop {
-                    if let Some(a) = self.input.chars().nth(self.index) {
-                        if a.is_alphanumeric() {
-                            tok.push(a);
+                    if let Some(c) = self.input.chars().nth(self.index) {
+                        if c.is_alphanumeric() {
+                            tok.push(c);
                             self.index += 1;
                             self.col += 1;
                         } else { break }
@@ -304,12 +305,12 @@ impl Lexer {
         let mut isCom = false;
         for i in 0..s.chars().count() {
             if isCom {
-                if s.chars().nth(i) == Some('@') && s.chars().nth(i - 1) != Some('\\') {
+                if s.chars().nth(i) == Some('@') && (i == 0 || s.chars().nth(i - 1) != Some('\\')) {
                     isCom = false;
                 } else if s.chars().nth(i) == Some('\n') {
                     str.push(s.chars().nth(i).unwrap());
                 }
-            } else if s.chars().nth(i) == Some('@') {
+            } else if s.chars().nth(i) == Some('@') && (i == 0 || s.chars().nth(i - 1) != Some('\\')) {
                 isCom = true;
             } else {
                 str.push(s.chars().nth(i).unwrap());

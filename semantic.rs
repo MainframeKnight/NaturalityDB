@@ -43,6 +43,18 @@ impl ToString for ExprTree {
     }
 }
 
+fn comaparable(t1: &Type, t2: &Type) -> bool {
+    match t1 {
+        Type::Object(_) | Type::FuncType(_) | Type::Sum(_) | Type::Double => false,
+        Type::Array(t) => *t2 == Type::Array(t.clone()) && comaparable(t, t),
+        Type::Bool => *t2 == Type::Bool,
+        Type::Int | Type::Char => *t2 == Type::Int || *t2 == Type::Char,
+        Type::Tuple(v) => *t2 == Type::Tuple(v.clone()) 
+            && v.iter().all(|x| comaparable(x, x)),
+        Type::Maybe(v) => *t2 == Type::Maybe(v.clone()) && comaparable(v, v)
+    }
+}
+
 fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>) -> Result<Type, String> {
     match t {
         ExprTree::IntLit(_) => Ok(Type::Int),
@@ -154,20 +166,8 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
             }
             return Err(format!["'{:?}' + '{:?}' is undefined.", t1, t2]);
         }, ExprTree::Eq(_, v1, v2) => {
-            let mut comp = true;
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
-            match t1.clone() {
-                Type::Object(_) | Type::FuncType(_) | Type::Sum(_) => comp = false,
-                Type::Array(t) => if t2 != Type::Array(t) {comp = false;}
-                Type::Bool => if t2 != Type::Bool {comp = false;}
-                Type::Int | Type::Char => if t2 != Type::Int && t2 != Type::Char {comp = false;}
-                Type::Tuple(v) => if t2 != Type::Tuple(v) {comp = false;}
-                Type::Maybe(v) => if t2 != Type::Maybe(v) {comp = false;}
-                Type::Double => if t2 == Type::Double || t2 == Type::Int {
-                    return Err("Comparing double with int or double is disallowed because it is inexact.".to_string());
-                } else {comp = false;}
-            }
-            if comp {Ok(Type::Bool)} else {Err(format!["types '{:?}' and '{:?}' are noncomparable for equality.", t1, t2])}
+            if comaparable(&t1, &t2) {Ok(Type::Bool)} else {Err(format!["types '{:?}' and '{:?}' are noncomparable for equality.", t1, t2])}
         }, ExprTree::Cmp(_, _, v1, v2) => {
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
             if (t1 == Type::Int || t1 == Type::Char) && (t2 == Type::Int || t2 == Type::Char) {
