@@ -2,7 +2,15 @@ use crate::tree::{self, expect, read_ident, LexerIterator, SpType};
 
 impl tree::Lambda {
     pub fn parse_lambda<T: LexerIterator>(input: &mut T) -> Result<tree::Lambda, String> {
-        expect(input, vec!["("])?;
+        let mut named;
+        match input.next() {
+            Some(a) if a.0.len() != 0 && a.0.chars().nth(0).unwrap().is_alphabetic() => {
+                named = Some((a.0, tree::Type::Bool));
+                expect(input, vec!["("])?;
+            }, Some(a) if a.0 == "(" => {
+                named = None;
+            }, _ => return Err(format!["Expected '(', found EOF."])
+        };
         let mut paramvec: Vec<(String, tree::Type)> = vec![];
         let id = read_ident(input)?;
         expect(input, vec![":"])?;
@@ -21,10 +29,14 @@ impl tree::Lambda {
                 None => return Err(format!["Expected ')', found EOF."])
             }
         }
-        expect(input, vec![")", "-", ">", "{"])?;
+        expect(input, vec![")", "-", ">"])?;
+        if named != None {
+            named.as_mut().unwrap().1 = tree::Type::parse(input)?;
+        }
+        expect(input, vec!["{"])?;
         let (val, br1, br2) = tree::find_bracket(input, "}", "{")?;
-        return Ok(tree::Lambda{ params: paramvec, code: 
-            tree::ExprTree::new(val, br1, br2)?});
+        return Ok(tree::Lambda{ params: paramvec, named: named, code: 
+            tree::Node::new(val, br1, br2)?});
     }
 }
 impl tree::SpType {
@@ -107,7 +119,7 @@ impl tree::SpType {
             expect(input, vec!["("])?;
             let s = read_ident(input)?;
             expect(input, vec![")"])?;
-            return Ok(SpType::Reg(tree::Type::Object(s)));
+            return Ok(SpType::Reg(tree::Type::Object(tree::CoordStr{ name: s, ln: line, col: col })));
         }
         return Err(format!["Unrecognized type '{}' at ({}, {})", lexeme, line, col]);
     }

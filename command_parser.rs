@@ -1,19 +1,19 @@
-use crate::tree::{self, expect, find_bracket, read_ident, Lexer};
+use crate::tree::{self, expect, find_bracket, read_ident, ComNode, Lexer};
 type Cmd = tree::Command;
 type attr = tree::Attr;
 
-fn parse_attrlist(input: &mut Lexer) -> Result<Vec<tree::ExprTree>, String> {
+fn parse_attrlist(input: &mut Lexer) -> Result<Vec<tree::Node>, String> {
     let mut res = vec![];
     let mut arg_vec = vec![];
     let mut closed = false;
     while let Some((lx, ln, cl)) = input.next() {
         if lx == ";" {
-            res.push(tree::ExprTree::new(arg_vec, ln, cl)?);
+            res.push(tree::Node::new(arg_vec, ln, cl)?);
             arg_vec = vec![];
             continue;
         }
         else if lx == "$" {
-            res.push(tree::ExprTree::new(arg_vec, ln, cl)?);
+            res.push(tree::Node::new(arg_vec, ln, cl)?);
             closed = true;
             break; 
         }
@@ -73,7 +73,7 @@ impl attr {
 }
 
 impl Cmd {
-    pub fn parse_program(input: &mut Lexer) -> Result<Vec<Cmd>, String> {
+    pub fn parse_program(input: &mut Lexer) -> Result<Vec<ComNode>, String> {
         let value;
         let (lexeme, line, col);
         match input.next() {
@@ -97,7 +97,7 @@ impl Cmd {
         } else if lexeme == "eval" {
             expect(input, vec!["{"])?;
             let (br,br1, br2) = find_bracket(input, "}", "{")?;
-            value = Cmd::Eval(tree::ExprTree::new(br, br1, br2)?);
+            value = Cmd::Eval(tree::Node::new(br, br1, br2)?);
         } else if lexeme == "commit" {
             let (file, ln, cl) = input.next().ok_or("Expected filename, found EOF.")?;
             if file.starts_with("\"") {
@@ -229,7 +229,7 @@ impl Cmd {
             return Err(format!["Unrecognized command at ({}, {}).", line, col]);
         }
         let mut cmd = Self::parse_program(input)?;
-        let mut res = vec![value];
+        let mut res = vec![ComNode{ cmd: value, col: col, ln: line} ];
         res.append(&mut cmd);
         if input.get_errors().len() > 0 {
             let mut err_str = String::from("Lexer errors occurred:\n");

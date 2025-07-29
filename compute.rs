@@ -31,25 +31,25 @@ fn int_double_op(r1: &ExprTree, r2: &ExprTree, op: char) -> Result<ExprTree, Str
 
 pub fn find_refs(expr: &ExprTree) -> Vec<(u64, u64)> {
     match expr {
-        ExprTree::ArrayLit(v, _) | ExprTree::TupleLit(v) => v.iter().map(|x| find_refs(x)).flatten().collect(),
+        ExprTree::ArrayLit(v, _) | ExprTree::TupleLit(v) => v.iter().map(|x| find_refs(&x.tree)).flatten().collect(),
         ExprTree::Ref(_, _, _, u1, u2) => vec![(*u1, *u2)],
-        ExprTree::JustLit(v) => find_refs(v),
+        ExprTree::JustLit(v) => find_refs(&v.tree),
         ExprTree::Plus(u, v) | ExprTree::Minus(u, v) | ExprTree::Div(u, v) |
             ExprTree::Mod(u, v) | ExprTree::Dot(u, v) | ExprTree::Mul(u, v) |
             ExprTree::Exp(u, v) | ExprTree::Eq(_, u, v) | ExprTree::Cmp(_, _, u, v) => {
-                let mut temp = find_refs(u);
-                temp.append(&mut find_refs(v));
+                let mut temp = find_refs(&u.tree);
+                temp.append(&mut find_refs(&v.tree));
                 temp
             }, ExprTree::Call(u, v) => {
-                let mut temp: Vec<_> = v.iter().map(|x| find_refs(x)).flatten().collect();
-                temp.append(&mut find_refs(u));
+                let mut temp: Vec<_> = v.iter().map(|x| find_refs(&x.tree)).flatten().collect();
+                temp.append(&mut find_refs(&u.tree));
                 temp
             }, ExprTree::IfExpr(a, b, c) => {
-                let mut temp = find_refs(a);
-                temp.append(&mut find_refs(b));
-                temp.append(&mut find_refs(c));
+                let mut temp = find_refs(&a.tree);
+                temp.append(&mut find_refs(&b.tree));
+                temp.append(&mut find_refs(&c.tree));
                 temp
-            }, ExprTree::LambdaExpr(lm) => find_refs(&lm.code),
+            }, ExprTree::LambdaExpr(lm) => find_refs(&lm.code.tree),
             _ => vec![]
     }
 }
@@ -58,44 +58,45 @@ pub fn compute(expr: &ExprTree, db: &tree::DBState, params: &HashMap<String, tre
     match expr {
         ExprTree::BoolLit(_) | ExprTree::CharLit(_) | ExprTree::DoubleLit(_) |
         ExprTree::IntLit(_)| ExprTree::NothingLit(_)| ExprTree::LambdaExpr(_) | ExprTree::Ref(_, _, _, _, _) => Ok(expr.clone()),
-        ExprTree::JustLit(v) => Ok(ExprTree::JustLit(Box::new(compute(&v, db, params)?))),
+        ExprTree::JustLit(v) => Ok(ExprTree::JustLit(Box::new(
+            tree::Node::simple(compute(&v.tree, db, params)?)))),
         ExprTree::ArrayLit(v, t) => {
             let mut res_vec = vec![];
             for i in v {
-                res_vec.push(Box::new(compute(&i, db, params)?));
+                res_vec.push(Box::new(tree::Node::simple(compute(&i.tree, db, params)?)));
             }
             Ok(ExprTree::ArrayLit(res_vec, t.clone()))
         }, ExprTree::TupleLit(v) => {
             let mut res_vec = vec![];
             for i in v {
-                res_vec.push(Box::new(compute(&i, db, params)?));
+                res_vec.push(Box::new(tree::Node::simple(compute(&i.tree, db, params)?)));
             }
             Ok(ExprTree::TupleLit(res_vec))
         }, ExprTree::IfExpr(cond, e1, e2 ) => {
-            match compute(cond, db, params)? {
-                ExprTree::BoolLit(true) => return compute(e1, db, params),
-                _ => return compute(e2, db, params)
+            match compute(&cond.tree, db, params)? {
+                ExprTree::BoolLit(true) => return compute(&e1.tree, db, params),
+                _ => return compute(&e2.tree, db, params)
             }
         }, ExprTree::Mod(e1, e2) => {
-            let (r1, r2) = (compute(e1, db, params)?, compute(e2, db, params)?);
+            let (r1, r2) = (compute(&e1.tree, db, params)?, compute(&e2.tree, db, params)?);
             if let (ExprTree::IntLit(val1), ExprTree::IntLit(val2)) = (r1, r2) {
                 return Ok(ExprTree::IntLit(val1 % val2));
             }
             return Err("Type mismatch in %".to_string());
         }, ExprTree::Mul(e1, e2) => {
-            let (r1, r2) = (compute(e1, db, params)?, compute(e2, db, params)?);
+            let (r1, r2) = (compute(&e1.tree, db, params)?, compute(&e2.tree, db, params)?);
             return int_double_op(&r1, &r2, '*');
         }, ExprTree::Div(e1, e2) => {
-            let (r1, r2) = (compute(e1, db, params)?, compute(e2, db, params)?);
+            let (r1, r2) = (compute(&e1.tree, db, params)?, compute(&e2.tree, db, params)?);
             return int_double_op(&r1, &r2, '/');
         }, ExprTree::Exp(e1, e2) => {
-            let (r1, r2) = (compute(e1, db, params)?, compute(e2, db, params)?);
+            let (r1, r2) = (compute(&e1.tree, db, params)?, compute(&e2.tree, db, params)?);
             return int_double_op(&r1, &r2, '^');
         }, ExprTree::Minus(e1, e2) => {
-            let (r1, r2) = (compute(e1, db, params)?, compute(e2, db, params)?);
+            let (r1, r2) = (compute(&e1.tree, db, params)?, compute(&e2.tree, db, params)?);
             return int_double_op(&r1, &r2, '-');
         }, ExprTree::Plus(e1, e2) => {
-            let (r1, r2) = (compute(e1, db, params)?, compute(e2, db, params)?);
+            let (r1, r2) = (compute(&e1.tree, db, params)?, compute(&e2.tree, db, params)?);
             match r1 {
                 ExprTree::ArrayLit(v, t) => {
                     match r2 {
@@ -122,7 +123,7 @@ pub fn compute(expr: &ExprTree, db: &tree::DBState, params: &HashMap<String, tre
                 }, _ => return Err("Type mismatch in +".to_string())
             }
         }, ExprTree::Cmp(greater, nons, e1, e2) => {
-            let (r1, r2) = (compute(e1, db, params)?, compute(e2, db, params)?);
+            let (r1, r2) = (compute(&e1.tree, db, params)?, compute(&e2.tree, db, params)?);
             match r1 {
                 ExprTree::IntLit(v) => {
                     match r2 {
@@ -146,7 +147,7 @@ pub fn compute(expr: &ExprTree, db: &tree::DBState, params: &HashMap<String, tre
                 }, _ => return Err("Type mismatch in cmp".to_string())
             }
         }, ExprTree::Eq(eq, e1, e2) => {
-            let (r1, r2) = (compute(e1, db, params)?, compute(e2, db, params)?);
+            let (r1, r2) = (compute(&e1.tree, db, params)?, compute(&e2.tree, db, params)?);
             match r1 {
                 ExprTree::ArrayLit(vals, _) => {
                     match r2 {
@@ -221,29 +222,44 @@ pub fn compute(expr: &ExprTree, db: &tree::DBState, params: &HashMap<String, tre
             };
             for i in 0..iter_len {
                 let mut new_params = params.clone();
-                new_params.insert(lm.params[0].0.clone(), ExprTree::Ref(String::new(), String::new(), Box::new(ExprTree::TupleLit(vec![])), pos as u64, i as u64));
-                match compute(&lm.code, db, &new_params)? {
+                new_params.insert(lm.params[0].0.clone(), ExprTree::Ref(String::new(), String::new(), Box::new(
+                    tree::Node::simple(ExprTree::TupleLit(vec![]))), pos as u64, i as u64));
+                match compute(&lm.code.tree, db, &new_params)? {
                     ExprTree::JustLit(t) => res.push(t),
                     _ => {}
                 }
             }
             Ok(ExprTree::ArrayLit(res, None))
         }, ExprTree::Call(e1, e2) => {
-            match **e1 {
+            match &e1.tree {
                 ExprTree::LambdaExpr(ref lm) => {
                     let mut new_params = params.clone();
                     for i in 0..lm.params.len() {
-                        new_params.insert(lm.params[i].0.clone(), compute(&e2[i], db, params)?);
+                        new_params.insert(lm.params[i].0.clone(), compute(&e2[i].tree, db, params)?);
                     }
-                    compute(&lm.code, db, &new_params)
+                    if let Some((n, _)) = &lm.named {
+                        new_params.insert(n.clone(), ExprTree::LambdaExpr(Box::new(*lm.clone())));
+                    }
+                    compute(&lm.code.tree, db, &new_params)
+                }, ExprTree::Ident(n) => {
+                    match params.get(n) {
+                        Some(ExprTree::LambdaExpr(lm)) => {
+                            let mut new_params = params.clone();
+                            for i in 0..lm.params.len() {
+                                new_params.insert(lm.params[i].0.clone(), compute(&e2[i].tree, db, params)?);
+                            }
+                            compute(&lm.code.tree, db, &new_params)
+                        }, _ => return Err("Unable to call not a function".to_string())
+                    }
                 }, _ => return Err("Type mismatch in call".to_string())
             }
         }, ExprTree::Dot(e1, e2) => {
-            if let (ExprTree::Ident(s1), ExprTree::Ident(s2)) = (*e1.clone(), *e2.clone()) {
-                if s1 == "Std" {
-                    // Implementation of std functions.
-                    return Err(format!["Std function '{}' not found.", s1]);
-                } else if let Some((_, ent)) = db.header.iter().find(|(x, _)| *x == *s1) {
+            if let (ExprTree::Ident(s1), ExprTree::Ident(s2)) = (e1.tree.clone(), e2.tree.clone()) {
+                // if s1 == "Std" {
+                //     // Implementation of std functions.
+                //     return Err(format!["({}, {}): standard function '{}' not found.", s1, e1.ln, e1.col]);
+                // } else 
+                if let Some((_, ent)) = db.header.iter().find(|(x, _)| *x == *s1) {
                     if let Some(a) = ent.iter().find(|x| x.name == *s2) {
                         if let tree::AttrFlag::Global = a.flag {
                             return Err(format!["Globals not supported yet."]);
@@ -251,11 +267,11 @@ pub fn compute(expr: &ExprTree, db: &tree::DBState, params: &HashMap<String, tre
                     }
                 }
             }
-            if let (t, ExprTree::Ident(s)) = (*e1.clone(), *e2.clone()) {
+            if let (t, ExprTree::Ident(s)) = (e1.tree.clone(), e2.tree.clone()) {
                 match compute(&t, db, params)? {
                     ExprTree::Ref(_, _, _, ent, pos) => {
                         if let Some(attr) = db.header[ent as usize].1.iter().position(|x| x.name == *s) {
-                            return Ok(db.data[&(ent, attr as u64)][pos as usize].clone());
+                            return Ok(db.data[&(ent, attr as u64)][pos as usize].tree.clone());
                         }
                         return Err(format!["Incorrect reference in dot opeartor"])
                     }, _ => return Err(format!["Incorrect application of dot opeartor"])

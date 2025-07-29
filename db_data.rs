@@ -1,5 +1,5 @@
 use std::{collections::HashMap, fs};
-use crate::tree::{Attr, AttrFlag, DBState, ExprTree, Lambda, SpType, Type};
+use crate::tree::{Attr, AttrFlag, CoordStr, DBState, ExprTree, Lambda, Node, SpType, Type};
 
 fn binary_read_string(b: &[u8], index: &mut usize) -> Option<String> {
     let mut i = *index;
@@ -14,7 +14,7 @@ fn binary_write_string(s: &str) -> Vec<u8> {
     b
 }
 
-fn binary_read_expr(b: &[u8], index: &mut usize) -> Option<ExprTree> {
+fn binary_read_expr_tree(b: &[u8], index: &mut usize) -> Option<ExprTree> {
     *index += 1;
     match *b.get(*index - 1)? {
         1 => {
@@ -106,7 +106,7 @@ fn binary_read_expr(b: &[u8], index: &mut usize) -> Option<ExprTree> {
             *index += 8;
             let pos = u64::from_le_bytes(b.get(*index..*index + 8)?.try_into().ok()?);
             *index += 8;
-            Some(ExprTree::Ref(String::new(), String::new(), Box::new(ExprTree::TupleLit(vec![])), ent, pos))
+            Some(ExprTree::Ref(String::new(), String::new(), Box::new(Node::simple(ExprTree::TupleLit(vec![]))), ent, pos))
         }, 23 => {
             let ent = binary_read_string(b, index)?;
             let lm = binary_parse_lambda(b, index)?;
@@ -114,6 +114,16 @@ fn binary_read_expr(b: &[u8], index: &mut usize) -> Option<ExprTree> {
         }
         _ => None
     }
+}
+fn binary_read_expr(b: &[u8], index: &mut usize) -> Option<Node> {
+    Some(Node::simple(binary_read_expr_tree(b, index)?))
+}
+fn write_trees(init: Vec<u8>, trees: Vec<&Node>) -> Vec<u8> {
+    let mut res = init;
+    for t in trees {
+        res.append(&mut binary_write_expr(&t.tree));
+    }
+    res
 }
 fn binary_write_expr(t: &ExprTree) -> Vec<u8> {
     match t {
@@ -138,7 +148,7 @@ fn binary_write_expr(t: &ExprTree) -> Vec<u8> {
             res},
         ExprTree::ArrayLit(v, opt_type) => {
             let mut res = vec![5];
-            res.append(&mut v.iter().map(|x| binary_write_expr(x.as_ref())).flatten().collect());
+            res.append(&mut v.iter().map(|x| binary_write_expr(&x.as_ref().tree)).flatten().collect());
             res.push(0);
             if res.len() == 1 {
                 res.append(&mut binary_write_type(&SpType::Reg(opt_type.clone().expect("empty array literal with no type"))));
@@ -146,12 +156,12 @@ fn binary_write_expr(t: &ExprTree) -> Vec<u8> {
             res},
         ExprTree::TupleLit(v) => {
             let mut res = vec![8];
-            res.append(&mut v.iter().map(|x| binary_write_expr(x.as_ref())).flatten().collect());
+            res.append(&mut v.iter().map(|x| binary_write_expr(&x.as_ref().tree)).flatten().collect());
             res.push(0);
             res},
         ExprTree::JustLit(v) => {
             let mut res = vec![6];
-            res.append(&mut binary_write_expr(v));
+            res.append(&mut binary_write_expr(&v.tree));
             res},
         ExprTree::NothingLit(t) => {
             [vec![7], binary_write_type(&SpType::Reg(t.clone()))].concat()
@@ -160,63 +170,24 @@ fn binary_write_expr(t: &ExprTree) -> Vec<u8> {
             let mut res = vec![9];
             res.append(&mut binary_write_string(s));
             res},
-        ExprTree::Plus(c1, c2) => {
-            let mut res = vec![10];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res},
-        ExprTree::Minus(c1, c2) => {
-            let mut res = vec![11];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res},
-        ExprTree::Mul(c1, c2) => {
-            let mut res = vec![12];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res},
-        ExprTree::Div(c1, c2) => {
-            let mut res = vec![13];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res},
-        ExprTree::Mod(c1, c2) => {
-            let mut res = vec![14];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res},
-        ExprTree::Exp(c1, c2) => {
-            let mut res = vec![15];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res},
-        ExprTree::Dot(c1, c2) => {
-            let mut res = vec![16];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res},
+        ExprTree::Plus(c1, c2) => {write_trees(vec![10], vec![c1, c2])},
+        ExprTree::Minus(c1, c2) => {write_trees(vec![11], vec![c1, c2])},
+        ExprTree::Mul(c1, c2) => {write_trees(vec![12], vec![c1, c2])},
+        ExprTree::Div(c1, c2) => {write_trees(vec![13], vec![c1, c2])},
+        ExprTree::Mod(c1, c2) => {write_trees(vec![14], vec![c1, c2])},
+        ExprTree::Exp(c1, c2) => {write_trees(vec![15], vec![c1, c2])},
+        ExprTree::Dot(c1, c2) => {write_trees(vec![16], vec![c1, c2])},
         ExprTree::Call(f, args) => {
             let mut res = vec![17];
-            res.append(&mut binary_write_expr(f));
-            res.append(&mut args.iter().map(|x| binary_write_expr(x.as_ref())).flatten().collect());
+            res.append(&mut binary_write_expr(&f.tree));
+            res.append(&mut args.iter().map(|x| binary_write_expr(&x.as_ref().tree)).flatten().collect());
             res.push(0);
             res},
         ExprTree::Eq(b, c1, c2) => {
-            let mut res = vec![18, if *b {1} else {0}];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res},
+            write_trees(vec![18, if *b {1} else {0}], vec![c1, c2])},
         ExprTree::Cmp(gr, st, c1, c2) => {
-            let mut res = vec![19, if *gr {1} else {0}, if *st {1} else {0}];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res},
-        ExprTree::IfExpr(c1, c2, c3) => {
-            let mut res = vec![20];
-            res.append(&mut binary_write_expr(c1));
-            res.append(&mut binary_write_expr(c2));
-            res.append(&mut binary_write_expr(c3));
-            res},
+            write_trees(vec![19, if *gr {1} else {0}, if *st {1} else {0}], vec![c1, c2])},
+        ExprTree::IfExpr(c1, c2, c3) => {write_trees(vec![20], vec![c1, c2, c3])},
         ExprTree::LambdaExpr(lm) => {
             let mut res = vec![21];
             res.append(&mut binary_write_lambda(lm));
@@ -231,7 +202,7 @@ fn binary_read_type(b: &[u8], index: &mut usize) -> Option<SpType> {
     match *b.get(*index - 1)? {
         1 => {
             let str = binary_read_string(b, index)?;
-            Some(SpType::Reg(Type::Object(str)))
+            Some(SpType::Reg(Type::Object(CoordStr::new(str))))
         }, 2 => { Some(SpType::Reg(Type::Int)) },
         3 => { Some(SpType::Reg(Type::Char)) },
         4 => { Some(SpType::Reg(Type::Bool)) },
@@ -279,7 +250,7 @@ fn binary_write_type(t: &SpType) -> Vec<u8> {
     match t {
         SpType::Reg(Type::Object(s)) => {
             let mut res = vec![1];
-            res.append(&mut binary_write_string(s));
+            res.append(&mut binary_write_string(&s.name));
             res},
         SpType::Reg(Type::Int) => vec![2],
         SpType::Reg(Type::Char) => vec![3],
@@ -331,8 +302,20 @@ fn binary_parse_lambda(b: &[u8], index: &mut usize) -> Option<Lambda> {
         }));
     }
     *index += 1;
+    let mut name = None;
+    match b.get(*index) {
+        Some(c) if *c == 1 => {
+            *index += 1;
+            name = Some((binary_read_string(b, index)?, Type::Bool));
+            match binary_read_type(b, index)? {
+                SpType::Reg(t) => name.as_mut().unwrap().1 = t,
+                _ => return None
+            }
+        }
+        _ => {*index += 1;}
+    }
     let expr = binary_read_expr(b, index)?;
-    Some(Lambda { params: res_vec, code: expr })
+    Some(Lambda { params: res_vec, code: expr, named: name })
 }
 fn binary_write_lambda(l: &Lambda) -> Vec<u8> {
     let mut res = vec![];
@@ -341,7 +324,14 @@ fn binary_write_lambda(l: &Lambda) -> Vec<u8> {
         res.append(&mut binary_write_type(&SpType::Reg(i.1.clone())));
     }
     res.push(0);
-    res.append(&mut binary_write_expr(&l.code));
+    match &l.named {
+        Some((n, t)) => {
+            res.push(1);
+            res.append(&mut binary_write_string(&n));
+            res.append(&mut binary_write_type(&SpType::Reg(t.clone())));
+        }, None => res.push(0)
+    }
+    res.append(&mut binary_write_expr(&l.code.tree));
     res
 }
 
@@ -446,7 +436,7 @@ impl DBState {
             res.append(&mut u64::to_le_bytes(i.0.1).to_vec());
             res.append(&mut i.1.len().to_le_bytes().to_vec());
             for j in i.1 {
-                res.append(&mut binary_write_expr(&j));
+                res.append(&mut binary_write_expr(&j.tree));
             }
         }
         res.append(&mut (self.ref_list.len() as u64).to_le_bytes().to_vec());

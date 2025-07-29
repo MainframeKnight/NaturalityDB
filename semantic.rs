@@ -1,15 +1,15 @@
 use std::collections::HashMap;
-use crate::{compute::compute, tree::{self, AttrFlag, DBState, ExprTree, Type}};
+use crate::{compute::compute, tree::{self, AttrFlag, DBState, ExprTree, Type, Node}};
 
-impl ToString for ExprTree {
+impl ToString for Node {
     fn to_string(&self) -> String {
-        match self {
-            Self::IntLit(n) => n.to_string(),
-            Self::BoolLit(n) => n.to_string(),
-            Self::CharLit(n) => n.to_string(),
-            Self::ArrayLit(v, _) => {
-                match v.get(0).map(|x| *x.clone()) {
-                    Some(Self::CharLit(_)) => {
+        match &self.tree {
+            ExprTree::IntLit(n) => n.to_string(),
+            ExprTree::BoolLit(n) => n.to_string(),
+            ExprTree::CharLit(n) => n.to_string(),
+            ExprTree::ArrayLit(v, _) => {
+                match v.get(0).map(|x| x.tree.clone()) {
+                    Some(ExprTree::CharLit(_)) => {
                         let mut res = String::from("\"");
                         res.push_str(&v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(""));
                         res.push('"');
@@ -25,7 +25,7 @@ impl ToString for ExprTree {
                 }
                 res.push(']');
                 res
-            }, Self::TupleLit(v) => {
+            }, ExprTree::TupleLit(v) => {
                 let mut res = "(".to_string();
                 for i in 0..v.len() {
                     res += &v[i].to_string();
@@ -35,9 +35,9 @@ impl ToString for ExprTree {
                 }
                 res.push(')');
                 res
-            }, Self::DoubleLit(d) => d.to_string(),
-            Self::JustLit(v) => format!["Just({})", v.to_string()],
-            Self::NothingLit(_) => "Nothing".to_string(),
+            }, ExprTree::DoubleLit(d) => d.to_string(),
+            ExprTree::JustLit(v) => format!["Just({})", v.to_string()],
+            ExprTree::NothingLit(_) => "Nothing".to_string(),
             _ => String::new()
         }
     }
@@ -55,19 +55,19 @@ fn comaparable(t1: &Type, t2: &Type) -> bool {
     }
 }
 
-fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>) -> Result<Type, String> {
-    match t {
+fn get_tree_type(t: &mut Node, db: &DBState, params: &HashMap<String, Type>) -> Result<Type, String> {
+    match &mut t.tree {
         ExprTree::IntLit(_) => Ok(Type::Int),
         ExprTree::CharLit(_) => Ok(Type::Char),
         ExprTree::DoubleLit(_) => Ok(Type::Double),
         ExprTree::BoolLit(_) => Ok(Type::Bool),
         ExprTree::Ref(ent, attr, val, u, v) => {
             let ent_pos = db.header.iter().position(|x| x.0 == *ent).ok_or(
-                format!["Reference to non-recognized entity '{}'.", ent])?;
+                format!["({}, {}): reference to non-recognized entity '{}'.", t.ln, t.col, ent])?;
             let attr_pos = db.header[ent_pos].1.iter().position(|x| x.name == *attr).ok_or(
-                format!["Reference to non-recognized attribute '{}' of entity '{}'.", attr, ent])?;
+                format!["({}, {}): reference to non-recognized attribute '{}' of entity '{}'.", t.ln, t.col, attr, ent])?;
             if db.header[ent_pos].1[attr_pos].flag != AttrFlag::Unique {
-                return Err(format!["Reference to non-unique attribute '{}' of entity '{}'.", attr, ent]);
+                return Err(format!["({}, {}): reference to non-unique attribute '{}' of entity '{}'.", t.ln, t.col, attr, ent]);
             }
             let val_type = val.get_type(db, params)?;
             if match &db.header[ent_pos].1[attr_pos].attrType {
@@ -75,7 +75,7 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
                 tree::SpType::Gen(t, _, _) => **t != val_type,
                 tree::SpType::Restrict(t, _) => **t != val_type
             } {
-                return Err(format!["The referenced value doesn't have necessary type."]);
+                return Err(format!["({}, {}): the referenced value doesn't have the required type.", t.ln, t.col]);
             }
             let mut found = false;
             for i in 0..db.data[&(ent_pos as u64, attr_pos as u64)].len() {
@@ -88,20 +88,21 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
                 }
             }
             if !found {
-                return Err(format!["The referenced value is not present in entity '{}'.", ent]);
+                return Err(format!["({}, {}): the referenced value is not present in entity '{}'.", t.ln, t.col, ent]);
             }
             *u = ent_pos as u64;
-            Ok(Type::Object(db.header[ent_pos].0.clone()))
+            Ok(Type::Object(tree::CoordStr::new(db.header[ent_pos].0.clone())))
         },
         ExprTree::LambdaExpr(lm) => lm.get_type(db, params),
-        ExprTree::ArrayLit(t, opt_type) => {
-            if t.len() == 0 {
-                return Ok(Type::Array(Box::new(opt_type.clone().ok_or("type needed for [] literal")?)));
+        ExprTree::ArrayLit(t1, opt_type) => {
+            if t1.len() == 0 {
+                return Ok(Type::Array(Box::new(opt_type.clone().ok_or(
+                    format!["({}, {}): type needed for [] literal", t.ln, t.col])?)));
             }
-            let elem_type = get_tree_type(&mut t[0], db, params)?;
-            for i in &mut t[1..] {
+            let elem_type = get_tree_type(&mut t1[0], db, params)?;
+            for i in &mut t1[1..] {
                 if elem_type != get_tree_type(i, db, params)? {
-                    return Err("Array literals cannot contain elements of different types.".to_string());
+                    return Err(format!["({}, {}): array literals cannot contain elements of different types.", t.ln, t.col]);
                 }
             }
             Ok(Type::Array(Box::new(elem_type)))
@@ -115,7 +116,7 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
         ExprTree::NothingLit(t) => Ok(Type::Maybe(Box::new(t.clone()))),
         ExprTree::Ident(s) => {
             if params.contains_key(s) { return Ok(params[s].clone()); }
-            return Err(format!["Unrecognized identifier: '{}'", s]);
+            return Err(format!["({}, {}): unrecognized identifier: '{}'", t.ln, t.col, s]);
         }, ExprTree::IfExpr(cond, b1, b2) => {
             let ct = get_tree_type(cond, db, params)?;
             if ct == Type::Bool {
@@ -125,32 +126,32 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
                 }
                 return Ok(Type::Sum(vec![Box::new(t1), Box::new(t2)]));
             }
-            return Err("if clause has a non-bool condition.".to_string());
+            return Err(format!["({}, {}): if clause has a non-bool condition.", t.ln, t.col]);
         }, ExprTree::Mod(v1, v2) => {
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
             if t1 == Type::Int && t2 == Type::Int {
                 Ok(Type::Int)
-            } else {Err(format!["'{:?}' % '{:?}' is undefined.", t1, t2])}
+            } else {Err(format!["({}, {}): '{:?}' % '{:?}' is undefined.", t.ln, t.col, t1, t2])}
         }, ExprTree::Exp(v1, v2) => {
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
             if (t1 == Type::Int || t1 == Type::Double) && (t2 == Type::Int || t2 == Type::Double) {
                 Ok(if t1 == Type::Double || t2 == Type::Double {Type::Double} else {Type::Int})
-            } else {Err(format!["'{:?}' ^ '{:?}' is undefined.", t1, t2])}
+            } else {Err(format!["({}, {}): '{:?}' ^ '{:?}' is undefined.", t.ln, t.col, t1, t2])}
         }, ExprTree::Mul(v1, v2) => {
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
             if (t1 == Type::Int || t1 == Type::Double) && (t2 == Type::Int || t2 == Type::Double) {
                 Ok(if t1 == Type::Double || t2 == Type::Double {Type::Double} else {Type::Int})
-            } else {Err(format!["'{:?}' * '{:?}' is undefined.", t1, t2])}
+            } else {Err(format!["({}, {}): '{:?}' * '{:?}' is undefined.", t.ln, t.col, t1, t2])}
         }, ExprTree::Div(v1, v2) => {
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
             if (t1 == Type::Int || t1 == Type::Double) && (t2 == Type::Int || t2 == Type::Double) {
                 Ok(if t1 == Type::Double || t2 == Type::Double {Type::Double} else {Type::Int})
-            } else {Err(format!["'{:?}' / '{:?}' is undefined.", t1, t2])}
+            } else {Err(format!["({}, {}): '{:?}' / '{:?}' is undefined.", t.ln, t.col, t1, t2])}
         }, ExprTree::Minus(v1, v2) => {
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
             if (t1 == Type::Int || t1 == Type::Double) && (t2 == Type::Int || t2 == Type::Double) {
                 Ok(if t1 == Type::Double || t2 == Type::Double {Type::Double} else {Type::Int})
-            } else {Err(format!["'{:?}' - '{:?}' is undefined.", t1, t2])}
+            } else {Err(format!["({}, {}): '{:?}' - '{:?}' is undefined.", t.ln, t.col, t1, t2])}
         }, ExprTree::Plus(v1, v2) => {
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
             if (t1 == Type::Int || t1 == Type::Double) && (t2 == Type::Int || t2 == Type::Double) {
@@ -161,13 +162,14 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
                 }
             } else if let Type::Array(ref e1) = t1 {
                 if let Type::Array(ref e2) = t2 {
-                    if e1 == e2 { return Ok(Type::Array(Box::new(t1))); }
+                    if e1 == e2 { return Ok(t1); }
                 }
             }
-            return Err(format!["'{:?}' + '{:?}' is undefined.", t1, t2]);
+            return Err(format!["({}, {}): '{:?}' + '{:?}' is undefined.", t.ln, t.col, t1, t2]);
         }, ExprTree::Eq(_, v1, v2) => {
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
-            if comaparable(&t1, &t2) {Ok(Type::Bool)} else {Err(format!["types '{:?}' and '{:?}' are noncomparable for equality.", t1, t2])}
+            if comaparable(&t1, &t2) {Ok(Type::Bool)} else {Err(format![
+                "({}, {}): types '{:?}' and '{:?}' are noncomparable for equality.", t.ln, t.col, t1, t2])}
         }, ExprTree::Cmp(_, _, v1, v2) => {
             let (t1, t2) = (get_tree_type(v1, db, params)?, get_tree_type(v2, db, params)?);
             if (t1 == Type::Int || t1 == Type::Char) && (t2 == Type::Int || t2 == Type::Char) {
@@ -175,24 +177,26 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
             } else if (t1 == Type::Int || t1 == Type::Double) && (t2 == Type::Int || t2 == Type::Double) {
                 return Ok(Type::Bool);
             }
-            Err(format!["types '{:?}' and '{:?}' are noncomparable.", t1, t2])
+            Err(format!["({}, {}): types '{:?}' and '{:?}' are noncomparable.", t.ln, t.col, t1, t2])
         }, ExprTree::For(ent, lm) => {
             if db.header.iter().position(|(x, _)| *x == *ent) == None {
-                return Err(format!["reference to non-recognized entity in 'for'."]);
+                return Err(format!["({}, {}): reference to non-recognized entity in 'for'.", t.ln, t.col]);
             }
             let lm_type = lm.get_type(db, params)?;
             match lm_type {
                 Type::FuncType(v) => {
-                    if **v.get(0).ok_or(format!["wrong type of lambda in 'for'."])? == Type::Object(ent.clone()) {
-                        match **v.get(1).ok_or(format!["wrong type of lambda in 'for'."])? {
-                            Type::Maybe(ref t) => {
-                                return Ok(Type::Array(t.clone()));
-                            }, _ => {}
+                    if let Type::Object(obj) = *v.get(0).ok_or(format!["({}, {}): wrong type of lambda in 'for'.", t.ln, t.col])?.clone() {
+                        if obj.name == ent.clone() {
+                            match **v.get(1).ok_or(format!["({}, {}): wrong type of lambda in 'for'.", t.ln, t.col])? {
+                                Type::Maybe(ref t) => {
+                                    return Ok(Type::Array(t.clone()));
+                                }, _ => {}
+                            }
                         }
                     }
                 }, _ => {}
             }
-            return Err(format!["wrong type of lambda in 'for'."]);
+            return Err(format!["({}, {}): wrong type of lambda in 'for'.", t.ln, t.col]);
         }, ExprTree::Call(f, args) => {
             match get_tree_type(f, db, params)? {
                 Type::FuncType(v) => {
@@ -203,17 +207,17 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
                     if v[0..v.len() - 1] == arg_types {
                         return Ok(*v[0].clone());
                     }
-                    Err("Parameter type mismatch in call.".to_string())
-                }, _ => Err("Non-function type cannot be called.".to_string())
+                    Err(format!["({}, {}): parameter type mismatch in call.", t.ln, t.col])
+                }, _ => Err(format!["({}, {}): non-function type cannot be called.", t.ln, t.col])
             }
         }, ExprTree::Dot(v1, v2) => {
-            match **v2 {
+            match v2.tree {
                 ExprTree::Ident(ref s2) => {
-                    if let ExprTree::Ident(ref s1) = **v1 {
-                        if s1 == "Std" {
-                            // std functions go here.
-                            return Err(format!["Unrecognized standard identifier '{}'", s2])
-                        } else {      
+                    if let ExprTree::Ident(ref s1) = v1.tree {
+                        // if s1 == "Std" {
+                        //     // std functions go here.
+                        //     return Err(format!["({}, {}): unrecognized standard identifier '{}'", t.ln, t.col, s2])
+                        // } else {      
                             if let Some((_, ent)) = db.header.iter().find(|(x, _)| *x == *s1) {
                                 if let Some(a) = ent.iter().find(|x| x.name == *s2) {
                                     if let AttrFlag::Global = a.flag {
@@ -224,11 +228,11 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
                                         };
                                     }
                                 }
-                            }
+                            // }
                         }
                     }
                     if let Type::Object(ent) = get_tree_type(v1, db, params)? {
-                        if let Some((_, ent_v)) = db.header.iter().find(|(x, _)| *x == ent) {
+                        if let Some((_, ent_v)) = db.header.iter().find(|(x, _)| *x == ent.name) {
                             if let Some(a) = ent_v.iter().find(|x| x.name == *s2) {
                                 return match &a.attrType {
                                     tree::SpType::Reg(r) => Ok(r.clone()),
@@ -237,16 +241,16 @@ fn get_tree_type(t: &mut ExprTree, db: &DBState, params: &HashMap<String, Type>)
                                 };
                             }
                         }
-                        return Err(format!["Unrecognized or incorrect entity reference of attribute '{}' of entity '{}'.", s2, ent]);
+                        return Err(format!["({}, {}): unrecognized or incorrect entity reference of attribute '{}' of entity '{}'.", t.ln, t.col, s2, ent.name]);
                     }
-                    Err(format!["'.' applied to non-identifier."])
-                }, _ => Err(format!["'.' applied to non-identifier."])
+                    Err(format!["({}, {}): '.' applied to non-identifier.", t.ln, t.col])
+                }, _ => Err(format!["({}, {}): '.' applied to non-identifier.", t.ln, t.col])
             }
         }
     }
 }
 
-impl tree::ExprTree {
+impl tree::Node {
     pub fn get_type(&mut self, db: &DBState, params: &HashMap<String, Type>) -> Result<Type, String> {
         get_tree_type(self, db, params)
     }
@@ -261,7 +265,21 @@ impl tree::Lambda {
             param_types.push(Box::new(i.1.clone()));
             params_ht.insert(i.0.clone(), i.1.clone());
         }
-        param_types.push(Box::new(self.code.get_type(db, &params_ht)?));
+        if let Some((n, t)) = &self.named {
+            if params_ht.contains_key(n) {
+                return Err(format!["({}, {}): lambda name collides with other identifier", self.code.ln, self.code.col]);
+            }
+            let mut type_v = param_types.clone();
+            type_v.push(Box::new(t.clone()));
+            params_ht.insert(n.clone(), Type::FuncType(type_v));
+        }
+        let code_type = self.code.get_type(db, &params_ht)?;
+        if let Some((_, t)) = &self.named {
+            if *t != code_type {
+                return Err(format!["({}, {}): type of lambda doesn't equal specified type", self.code.ln, self.code.col])
+            }
+        }
+        param_types.push(Box::new(code_type));
         Ok(Type::FuncType(param_types))
     }
 }
@@ -272,12 +290,12 @@ impl tree::SpType {
             tree::SpType::Gen(t, func, _) => {
                 tree::SpType::Reg(*t.clone()).check(db)?;
                 if func.get_type(db, &HashMap::new())? == Type::FuncType(vec![Box::new(Type::Int), Box::new(*t.clone())]) {} else {
-                    return Err("Incorrect type of Gen function.".to_string());
+                    return Err(format!["({}, {}): incorrect type of Gen function.", func.code.ln, func.code.col]);
                 }
             }, tree::SpType::Restrict(t, func) => {
                 tree::SpType::Reg(*t.clone()).check(db)?;
                 if func.get_type(db, &HashMap::new())? == Type::FuncType(vec![Box::new(*t.clone()), Box::new(Type::Bool)]) {} else {
-                    return Err("Incorrect type of Restrict function.".to_string());
+                    return Err(format!["({}, {}): incorrect type of Restrict function.", func.code.ln, func.code.col]);
                 }
             }, tree::SpType::Reg(t) => {
                 match t {
@@ -287,8 +305,8 @@ impl tree::SpType {
                         for t in v {
                             tree::SpType::Reg(*t.clone()).check(db)?;
                         },
-                    tree::Type::Object(s) => if let None = db.header.iter().find(|x| x.0 == *s) {
-                        return Err("Object type refers to a non-recognized entity.".to_string());
+                    tree::Type::Object(s) => if let None = db.header.iter().find(|x| x.0 == *s.name) {
+                        return Err(format!["({}, {}): object type refers to a non-recognized entity.", s.ln, s.col]);
                     }
                 }
             }

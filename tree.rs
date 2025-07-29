@@ -2,40 +2,63 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum ExprTree {
-    Ref(String, String, Box<ExprTree>, u64, u64),
+    Ref(String, String, Box<Node>, u64, u64),
     For(String, Box<Lambda>),
     IntLit(i64),
     CharLit(char),
     BoolLit(bool),
     DoubleLit(f64),
-    ArrayLit(Vec<Box<ExprTree>>, Option<Type>),
-    JustLit(Box<ExprTree>),
+    ArrayLit(Vec<Box<Node>>, Option<Type>),
+    JustLit(Box<Node>),
     NothingLit(Type),
-    TupleLit(Vec<Box<ExprTree>>),
+    TupleLit(Vec<Box<Node>>),
     Ident(String),
-    Plus(Box<ExprTree>, Box<ExprTree>),
-    Minus(Box<ExprTree>, Box<ExprTree>),
-    Mul(Box<ExprTree>, Box<ExprTree>),
-    Div(Box<ExprTree>, Box<ExprTree>),
-    Mod(Box<ExprTree>, Box<ExprTree>),
-    Exp(Box<ExprTree>, Box<ExprTree>),
-    Dot(Box<ExprTree>, Box<ExprTree>),
-    Call(Box<ExprTree>, Vec<Box<ExprTree>>),
-    Eq(bool, Box<ExprTree>, Box<ExprTree>), // The first arg is true, when == and false when !=
-    Cmp(bool, bool, Box<ExprTree>, Box<ExprTree>), // 1st arg: true -> ">", false -> "<", 2nd arg: true -> nonstrict, false -> strict.
-    IfExpr(Box<ExprTree>, Box<ExprTree>, Box<ExprTree>),
+    Plus(Box<Node>, Box<Node>),
+    Minus(Box<Node>, Box<Node>),
+    Mul(Box<Node>, Box<Node>),
+    Div(Box<Node>, Box<Node>),
+    Mod(Box<Node>, Box<Node>),
+    Exp(Box<Node>, Box<Node>),
+    Dot(Box<Node>, Box<Node>),
+    Call(Box<Node>, Vec<Box<Node>>),
+    Eq(bool, Box<Node>, Box<Node>), // The first arg is true, when == and false when !=
+    Cmp(bool, bool, Box<Node>, Box<Node>), // 1st arg: true -> ">", false -> "<", 2nd arg: true -> nonstrict, false -> strict.
+    IfExpr(Box<Node>, Box<Node>, Box<Node>),
     LambdaExpr(Box<Lambda>)
+}
+
+#[derive(Debug, Clone)]
+pub struct Node {
+    pub tree: ExprTree,
+    pub col: u64,
+    pub ln: u64
+}
+impl Node {
+    pub fn simple(t: ExprTree) -> Node { Self { tree: t, col: 0, ln: 0 }}
 }
 
 #[derive(Debug, Clone)]
 pub struct Lambda {
     pub params: Vec<(String, Type)>,
-    pub code: ExprTree
+    pub code: Node,
+    pub named: Option<(String, Type)>
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
+pub struct CoordStr {
+    pub name: String, pub ln: u64, pub col: u64
+}
+impl PartialEq for CoordStr {
+    fn eq(&self, other: &Self) -> bool {
+        return self.name == other.name;
+    }
+}
+impl CoordStr {
+    pub fn new(n: String) -> Self { CoordStr { name: n, ln: 0, col: 0 }}
+}
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
-    Object(String),
+    Object(CoordStr),
     Int,
     Char,
     Bool,
@@ -82,8 +105,8 @@ pub enum Command {
     Open(String),
     Commit(String),
     NewEntity(String, Vec<Attr>),
-    Eval(ExprTree),
-    Add(String, Vec<(String, Vec<ExprTree>)>),
+    Eval(Node),
+    Add(String, Vec<(String, Vec<Node>)>),
     Delete(String, Lambda),
     Trans(String, Lambda, Vec<(String, Lambda)>),
     Reshape(String, Vec<ReshapeOptions>, Option<String>),
@@ -93,9 +116,15 @@ pub enum Command {
     Drop(String)
 }
 #[derive(Debug)]
+pub struct ComNode {
+    pub cmd: Command,
+    pub col: u64,
+    pub ln: u64
+}
+#[derive(Debug)]
 pub struct DBState {
     pub header: Vec<(String, Vec<Attr>)>,
-    pub data: HashMap<(u64, u64), Vec<ExprTree>>,
+    pub data: HashMap<(u64, u64), Vec<Node>>,
     pub ref_list: HashMap<(u64, u64), u64>
 }
 

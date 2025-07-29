@@ -34,6 +34,7 @@ fn parse_lit(code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_c
         return Err(format!["Expected literal or identifier at ({}, {})", end_ln, end_cl]);
     }
     let (lx, ln, cl) = &code[*index as usize];
+    let (mut ln, mut cl) = (*ln, *cl);
     *index += 1;
     if let Ok(v) = lx.parse::<i64>() {
         return Ok(ExprTree::IntLit(v));
@@ -48,9 +49,20 @@ fn parse_lit(code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_c
         return Ok(ExprTree::CharLit(lx.chars().nth(1).ok_or("bug")?));
     }
     if lx.starts_with('\"') {
+        cl += 1;
         let mut res = Vec::new();
         for i in &lx.chars().collect::<Vec<_>>()[1..lx.chars().count() - 1] {
-            res.push(Box::new(ExprTree::CharLit(*i)));
+            res.push(Box::new(tree::Node{
+                tree: ExprTree::CharLit(*i),
+                col: cl,
+                ln: ln
+            }));
+            if *i == '\n' {
+                cl = 1;
+                ln += 1;
+            } else {
+                cl += 1;
+            }
         }
         return Ok(ExprTree::ArrayLit(res, Some(tree::Type::Char)))
     }
@@ -173,21 +185,31 @@ fn parse_lit(code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_c
 }
 
 fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32, end_ln: u64, end_cl: u64)
-    -> Result<ExprTree, String> {
+    -> Result<tree::Node, String> {
     match nonterm {
         "E1" => {
             let val1 = grammar_parser("E2", code, index, end_ln, end_cl)?;
             match code.iter().nth(*index as usize) {
                 Some((a,_,_)) if a == "=" => {
+                    let (_, ln, cl) = code[*index as usize];
                     *index += 1;
                     grammar_expect("=", code, index, end_ln, end_cl)?;
                     let val2 = grammar_parser("E2", code, index, end_ln, end_cl)?;
-                    return Ok(ExprTree::Eq(true, Box::new(val1), Box::new(val2)));
+                    return Ok(tree::Node {
+                        tree: ExprTree::Eq(true, Box::new(val1), Box::new(val2)),
+                        col: cl,
+                        ln: ln
+                    });
                 }, Some((a,_,_)) if a == "!" => {
+                    let (_, ln, cl) = code[*index as usize];
                     *index += 1;
                     grammar_expect("=", code, index, end_ln, end_cl)?;
                     let val2 = grammar_parser("E2", code, index, end_ln, end_cl)?;
-                    return Ok(ExprTree::Eq(false, Box::new(val1), Box::new(val2)));
+                    return Ok(tree::Node {
+                        tree: ExprTree::Eq(false, Box::new(val1), Box::new(val2)),
+                        col: cl,
+                        ln: ln
+                    });
                 }, Some((tok, ln, cl)) => Err(format!["Unexpected token '{}' in expression at ({}, {})",
                     tok, ln, cl]),
                 None => Ok(val1)
@@ -196,6 +218,7 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
             let val1 = grammar_parser("E3", code, index, end_ln, end_cl)?;
             match code.iter().nth(*index as usize) {
                 Some((a,_,_)) if "<>".contains(a) => {
+                    let (_, ln, cl) = code[*index as usize];
                     let is_greater = a == ">";
                     let mut is_eq = false;
                     *index += 1;
@@ -204,16 +227,26 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
                         Some(_) | None => {}
                     }
                     let val2 = grammar_parser("E3", code, index, end_ln, end_cl)?;
-                    return Ok(ExprTree::Cmp(is_greater, is_eq, Box::new(val1), Box::new(val2)));
+                    return Ok(tree::Node {
+                        tree: ExprTree::Cmp(is_greater, is_eq, Box::new(val1), Box::new(val2)),
+                        col: cl,
+                        ln: ln
+                    });
                 }, _ => Ok(val1)
             }
         }, "E3" => {
             let mut res = grammar_parser("E4", code, index, end_ln, end_cl)?;
             while let Some((a, _, _)) = code.iter().nth(*index as usize) {
                 if a == "+" || a == "-" {
+                    let (_, ln, cl) = code[*index as usize];
                     *index += 1;
                     let val = grammar_parser("E4", code, index, end_ln, end_cl)?;
-                    res = if a == "+" {ExprTree::Plus(Box::new(res), Box::new(val))} else {ExprTree::Minus(Box::new(res), Box::new(val))}
+                    res = tree::Node {
+                        tree: if a == "+" {ExprTree::Plus(Box::new(res), Box::new(val))} 
+                            else {ExprTree::Minus(Box::new(res), Box::new(val))},
+                        ln: ln,
+                        col: cl
+                    }
                 } else { break; }
             }
             return Ok(res);
@@ -221,11 +254,12 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
             let mut res = grammar_parser("E5", code, index, end_ln, end_cl)?;
             while let Some((a, _, _)) = code.iter().nth(*index as usize) {
                 if a == "*" || a == "/" || a == "%" {
+                    let (_, ln, cl) = code[*index as usize];
                     *index += 1;
                     let val = grammar_parser("E5", code, index, end_ln, end_cl)?;
-                    if a == "*" { res = ExprTree::Mul(Box::new(res), Box::new(val)); }
-                    else if a == "/" { res = ExprTree::Div(Box::new(res), Box::new(val)); }
-                    else if a == "%" { res = ExprTree::Mod(Box::new(res), Box::new(val)); }
+                    if a == "*" { res = tree::Node{ tree: ExprTree::Mul(Box::new(res), Box::new(val)), col: cl, ln: ln }; }
+                    else if a == "/" { res = tree::Node{ tree: ExprTree::Div(Box::new(res), Box::new(val)), col: cl, ln: ln } }
+                    else if a == "%" { res = tree::Node{ tree: ExprTree::Mod(Box::new(res), Box::new(val)), col: cl, ln: ln } }
                 } else { break; }
             }
             return Ok(res);
@@ -233,13 +267,19 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
             let res = grammar_parser("E6", code, index, end_ln, end_cl)?;
             match code.iter().nth(*index as usize) {
                 Some((a, _, _)) if a == "^" => {
+                    let (_, ln, cl) = code[*index as usize];
                     *index += 1;
-                    return Ok(ExprTree::Exp(Box::new(res), Box::new(grammar_parser("E6", code, index, end_ln, end_cl)?)));
+                    return Ok(tree::Node{ 
+                        tree: ExprTree::Exp(Box::new(res), Box::new(grammar_parser("E6", code, index, end_ln, end_cl)?)),
+                        col: cl,
+                        ln: ln
+                    });
                 }, Some(_) | None => return Ok(res)
             }
         }, "E6" => {
             match code.iter().nth(*index as usize) {
                 Some((a, _, _)) if a == "if" => {
+                    let (_, ln, cl) = code[*index as usize];
                     grammar_expect("if", code, index, end_ln, end_cl)?;
                     let inner_vec = bracket_searcher("if", "then", code, index, end_ln, end_cl)?;
                     let cond = grammar_parser("E1", &inner_vec, &mut 0, end_ln, end_cl)?;
@@ -248,7 +288,11 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
                     let br1 = grammar_parser("E1", &inner_vec, &mut 0, end_ln, end_cl)?;
                     grammar_expect("else", code, index, end_ln, end_cl)?;
                     let br2 = grammar_parser("E1", code, index, end_ln, end_cl)?;
-                    return Ok(ExprTree::IfExpr(Box::new(cond), Box::new(br1), Box::new(br2)));
+                    return Ok(tree::Node { 
+                        tree: ExprTree::IfExpr(Box::new(cond), Box::new(br1), Box::new(br2)),
+                        col: cl,
+                        ln: ln
+                    });
                 }, Some(_) | None => Ok(grammar_parser("E7", code, index, end_ln, end_cl)?)}
         }
         "E7" => {
@@ -260,19 +304,36 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
                     grammar_expect(")", code, index, end_ln, end_cl)?;
                     v
                 }, Some((a, _, _)) if a == "lambda" => {
+                    let (_, ln, cl) = code[*index as usize];
                     *index += 1;
                     let mut type_toks = tree::TokenList { tokens: code, index: *index as u64 };
                     let t = tree::Lambda::parse_lambda(&mut type_toks)?;
                     *index += type_toks.index as u32;
-                    ExprTree::LambdaExpr(Box::new(t))
-                }, Some(_) | None => parse_lit(code, index, end_ln, end_cl)?
+                    tree::Node {
+                        tree: ExprTree::LambdaExpr(Box::new(t)),
+                        col: cl,
+                        ln: ln
+                    }
+                }, Some(_) | None => {
+                    let prev_ind = *index;
+                    let res = parse_lit(code, index, end_ln, end_cl)?;
+                    let (_, ln, cl) = code[prev_ind as usize];
+                    tree::Node { tree: res, ln: ln, col: cl }
+                }
             };
             while let Some((a, _, _)) = code.iter().nth(*index as usize) {
                 if a == "." {
+                    let (_, ln, cl) = code[*index as usize];
                     *index += 1;
-                    res = ExprTree::Dot(Box::new(res), Box::new(parse_lit(code, index, end_ln, end_cl)?));
+                    let (_, ln_lit, cl_lit) = code[*index as usize];
+                    res = tree::Node { tree: ExprTree::Dot(Box::new(res), Box::new(tree::Node {
+                            tree: parse_lit(code, index, end_ln, end_cl)?,
+                            col: cl_lit,
+                            ln: ln_lit})),
+                        col: cl, ln: ln};
                 } else if a == "(" {
                     let mut arg_vec = Vec::new();
+                    let (_, ln, cl) = code[*index as usize];
                     *index += 1;
                     loop {
                         let mut do_exit = false;
@@ -307,7 +368,7 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
                         *index += 1;
                     }
                     *index += 1;
-                    res = ExprTree::Call(Box::new(res), arg_vec);
+                    res = tree::Node {tree: ExprTree::Call(Box::new(res), arg_vec), ln: ln, col: cl};
                 } else { break; }
             }
             return Ok(res);
@@ -315,8 +376,8 @@ fn grammar_parser(nonterm: &str, code: &Vec<(String, u64, u64)>, index: &mut u32
     }
 }
 
-impl ExprTree {
-    pub fn new(code: Vec<(String, u64, u64)>, end_ln: u64, end_col: u64) -> Result<ExprTree, String> {
+impl tree::Node {
+    pub fn new(code: Vec<(String, u64, u64)>, end_ln: u64, end_col: u64) -> Result<tree::Node, String> {
         if code.len() == 0 {Err(format!["Expected expression at ({}, {}).", end_ln, end_col]) }
         else {
             Ok(grammar_parser("E1", &code, &mut 0, end_ln, end_col)?)
